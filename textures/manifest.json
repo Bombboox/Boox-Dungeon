@@ -1,0 +1,6 @@
+{
+    "textures": [
+      { "key": "grass", "src": "/textures/grass.png" },
+      { "key": "wall",  "src": "/textures/wall.png" }
+    ]
+  }
