@@ -5,7 +5,17 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import {C2S, S2C} from "./game/messages.js";
-import {TICK_RATE, DT, spawnPlayer, applyInput, stepWorld, makeSnapshot} from "./game/world.js";
+import {
+    TICK_RATE,
+    DT,
+    spawnPlayer,
+    spawnEnemy,
+    applyInput,
+    applySkillUpgrade,
+    stepWorld,
+    makeSnapshot,
+    PLAYER_CLASSES,
+} from "./game/world.js";
 import { loadLdtkJsonSync, findPlayerSpawn } from "./game/findSpawn.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,30 +33,54 @@ const level_0_path = path.join(__dirname, "../client/levels/leveL_0.json");
 const project = loadLdtkJsonSync(level_0_path)
 const spawn_pos = findPlayerSpawn(project, "Level_0");
 
-const players = new Map();
+const entities = new Map();
+const defaultEnemy = spawnEnemy("enemy:0", spawn_pos.x + 240, spawn_pos.y + 80);
+entities.set(defaultEnemy.id, defaultEnemy);
+const joinClassCycle = [PLAYER_CLASSES.BLADE, PLAYER_CLASSES.THROWER];
+let joinClassIndex = 0;
 
 io.on("connection", (socket) => {
     const id = socket.id;
-    const player = spawnPlayer(id, spawn_pos.x, spawn_pos.y);
-    players.set(id, player);
+    const playerClass = joinClassCycle[joinClassIndex % joinClassCycle.length];
+    joinClassIndex += 1;
+    const player = spawnPlayer(id, spawn_pos.x, spawn_pos.y, playerClass);
+    entities.set(id, player);
 
-    socket.emit(S2C.INIT, {meId: id, tickRate: TICK_RATE});
+    socket.emit(S2C.INIT, {meId: id, tickRate: TICK_RATE, playerClass});
 
     socket.on(C2S.INPUT, (msg) => {
-        const p = players.get(id);
+        const p = entities.get(id);
         if(!p) return;
         applyInput(p, msg);
     });
 
+    socket.on(C2S.SKILL_UPGRADE, (msg) => {
+        const p = entities.get(id);
+        if (!p || !msg || typeof msg !== "object") return;
+        if (typeof msg.stat !== "string") return;
+        applySkillUpgrade(p, msg.stat);
+    });
+
+    socket.on(C2S.CHAT, (rawMessage) => {
+        const text = typeof rawMessage === "string" ? rawMessage.trim() : "";
+        if (!text) return;
+
+        io.emit(S2C.CHAT, {
+            id,
+            text: text.slice(0, 240),
+            ts: Date.now(),
+        });
+    });
+
     socket.on("disconnect", () => {
-        players.delete(id);
+        entities.delete(id);
         io.emit(S2C.DISCONNECT, {id});
     });
 });
 
 setInterval(() => {
-    stepWorld(players, DT);
-    const snap = makeSnapshot(players, Date.now());
+    stepWorld(entities, DT);
+    const snap = makeSnapshot(entities, Date.now());
     io.emit(S2C.SNAPSHOT, snap);
 }, 1000 / TICK_RATE);
 
