@@ -178,6 +178,8 @@ export class Enemy extends Entity {
         id,
         x = 0,
         y = 0,
+        name = "Enemy",
+        level = 1,
         angle = 0,
         radius = 16,
         color = "#ff6b6b",
@@ -201,10 +203,20 @@ export class Enemy extends Entity {
 
         this.spawnX = this.x;
         this.spawnY = this.y;
+        this.name = typeof name === "string" && name.trim() ? name.trim() : "Enemy";
+        this.level = Math.max(1, Number.isFinite(level) ? Math.floor(level) : 1);
         this.maxDistanceFromSpawn = maxDistanceFromSpawn;
         this.behavior = "idle"; // can be 'idle' or 'chasing'
         this.aggroRange = aggroRange;
         this.targetId = null; // currently chased player id, or null
+    }
+
+    toSnapshot() {
+        return {
+            ...super.toSnapshot(),
+            name: this.name,
+            level: this.level,
+        };
     }
 
     step(dt, players = []) {

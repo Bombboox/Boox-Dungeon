@@ -133,6 +133,17 @@ function drawEnemyHealthBar(ctx, camera, entity) {
   const x = Math.round(sx - width / 2);
   const y = Math.round(sy - (entity.radius || 14) - 14);
   const ratio = (entity.health || 0) / entity.maxHealth;
+
+  const enemyName = typeof entity.name === "string" && entity.name.trim() ? entity.name.trim() : "Enemy";
+  const enemyLevel = Number.isFinite(entity.level) ? Math.max(1, Math.floor(entity.level)) : 1;
+  ctx.save();
+  ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+  ctx.font = "bold 11px Consolas, monospace";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillText(`${enemyName}  LVL ${enemyLevel}`, sx, y - 3);
+  ctx.restore();
+
   drawBar(ctx, x, y, width, height, ratio, "#ff5e5e");
 }
 
@@ -285,6 +296,41 @@ function drawExpGainEvents(ctx, camera, entitiesById, expEvents) {
   }
 }
 
+function drawDamageEvents(ctx, camera, damageEvents, meId) {
+  if (!Array.isArray(damageEvents) || damageEvents.length === 0) return;
+  if (!meId) return;
+
+  console.log("lol");
+
+  const now = Date.now();
+  for (const evt of damageEvents) {
+    if (!evt || evt.playerId !== meId) continue;
+    if (!Number.isFinite(evt.amount) || evt.amount <= 0) continue;
+    if (!Number.isFinite(evt.x) || !Number.isFinite(evt.y)) continue;
+    if (!Number.isFinite(evt.createdAt) || !Number.isFinite(evt.expiresAt) || evt.expiresAt <= evt.createdAt) continue;
+    if (now >= evt.expiresAt) continue;
+
+    const progress = Math.max(0, Math.min(1, (now - evt.createdAt) / (evt.expiresAt - evt.createdAt)));
+    const alpha = 1 - progress;
+    const rise = 28 * progress;
+    const drift = 8 * progress;
+
+    const { x: sx, y: sy } = worldToScreen(evt.x, evt.y, camera);
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = "#ffd66b";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.lineWidth = 2;
+    ctx.font = "bold 15px Consolas, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.strokeText(String(Math.floor(evt.amount)), sx + drift, sy - 22 - rise);
+    ctx.fillText(String(Math.floor(evt.amount)), sx + drift, sy - 22 - rise);
+    ctx.restore();
+  }
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   const radius = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();
@@ -353,6 +399,7 @@ export function renderFrame(ctx, state) {
   const projectiles = Array.isArray(state.projectiles) ? state.projectiles : [];
   const slashes = Array.isArray(state.slashes) ? state.slashes : [];
   const expEvents = Array.isArray(state.expEvents) ? state.expEvents : [];
+  const damageEvents = Array.isArray(state.damageEvents) ? state.damageEvents : [];
   const chatBubblesById = state.chatBubblesById || {};
   const textureBaseUrl = "/assets/skins/";
   let me = null;
@@ -378,6 +425,7 @@ export function renderFrame(ctx, state) {
   }
 
   drawExpGainEvents(ctx, camera, state.players || state.entities || {}, expEvents);
+  drawDamageEvents(ctx, camera, damageEvents, state.meId);
   drawLocalExpBar(ctx, me, camera);
   drawLocalHealthBar(ctx, me, camera);
 }

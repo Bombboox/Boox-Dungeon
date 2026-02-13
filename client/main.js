@@ -369,6 +369,7 @@ function render() {
     projectiles: lastSnapshot.projectiles || [],
     slashes: lastSnapshot.slashes || [],
     expEvents: lastSnapshot.expEvents || [],
+    damageEvents: lastSnapshot.damageEvents || [],
     camera,
     chatBubblesById,
   });

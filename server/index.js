@@ -16,7 +16,7 @@ import {
     makeSnapshot,
     PLAYER_CLASSES,
 } from "./game/world.js";
-import { loadLdtkJsonSync, findPlayerSpawn } from "./game/findSpawn.js";
+import { loadLdtkJsonSync, findPlayerSpawn, findEnemySpawns } from "./game/findSpawn.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,13 +29,19 @@ const io = new Server(server, {
     cors: {origin: "*"},
 });
 
-const level_0_path = path.join(__dirname, "../client/levels/leveL_0.json");
-const project = loadLdtkJsonSync(level_0_path)
+const level_0_path = path.join(__dirname, "../client/levels/level_0.json");
+const project = loadLdtkJsonSync(level_0_path);
 const spawn_pos = findPlayerSpawn(project, "Level_0");
+const enemySpawns = findEnemySpawns(project, "Level_0");
 
 const entities = new Map();
-const defaultEnemy = spawnEnemy("enemy:0", spawn_pos.x + 240, spawn_pos.y + 80);
-entities.set(defaultEnemy.id, defaultEnemy);
+enemySpawns.forEach((spawn, index) => {
+    const enemy = spawnEnemy(`enemy:${index}`, spawn.x, spawn.y, {
+        name: spawn.name,
+        level: spawn.level,
+    });
+    entities.set(enemy.id, enemy);
+});
 const joinClassCycle = [PLAYER_CLASSES.BLADE, PLAYER_CLASSES.THROWER];
 let joinClassIndex = 0;
 

@@ -45,6 +45,7 @@ const STAT_ATTACK_SPEED_GAIN = 0.08;
 const ATTACK_SPEED_MIN_SCALE = 0.45;
 
 const EXP_POPUP_MS = 900;
+const DAMAGE_POPUP_MS = 700;
 
 import { Enemy, Player } from "./entities.js";
 
@@ -54,10 +55,16 @@ const activeProjectiles = [];
 const activeSlashes = [];
 const pendingEnemyRespawns = [];
 const expGainEvents = [];
+const damageEvents = [];
 
 function expToNextLevel(level) {
     const safeLevel = Math.max(1, level | 0);
     return Math.floor(100 * Math.pow(1.22, safeLevel - 1));
+}
+
+function getEnemyLevelMultiplier(level) {
+    const safeLevel = Math.max(1, level | 0);
+    return Math.pow(2, (safeLevel - 1) / 10);
 }
 
 function applyPlayerDerivedStats(player) {
@@ -106,10 +113,22 @@ function grantExp(player, amount, nowMs) {
     });
 }
 
-function markEnemyHit(enemy, damage, attackerId) {
+function markEnemyHit(enemy, damage, attackerId, nowMs) {
     if (!enemy || enemy.type !== "enemy" || enemy.health <= 0) return;
+    const appliedDamage = Math.max(0, Math.min(enemy.health, Number.isFinite(damage) ? damage : 0));
     enemy.lastHitBy = attackerId || null;
     enemy.takeDamage(damage);
+    if (!attackerId || appliedDamage <= 0) return;
+
+    damageEvents.push({
+        id: `dmg:${attackerId}:${enemy.id}:${nowMs}:${Math.random().toString(16).slice(2)}`,
+        playerId: attackerId,
+        amount: Math.floor(appliedDamage),
+        x: enemy.x,
+        y: enemy.y,
+        createdAt: nowMs,
+        expiresAt: nowMs + DAMAGE_POPUP_MS,
+    });
 }
 
 export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE) {
@@ -127,18 +146,28 @@ export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE) {
     return player;
 }
 
-export function spawnEnemy(id, x, y) {
+export function spawnEnemy(id, x, y, options = {}) {
+    const parsedLevel = Number(options.level);
+    const enemyLevel = Math.max(1, Number.isFinite(parsedLevel) ? Math.floor(parsedLevel) : 1);
+    const enemyName = typeof options.name === "string" && options.name.trim() ? options.name.trim() : "Enemy";
+    const levelMult = getEnemyLevelMultiplier(enemyLevel);
+    const scaledHealth = Math.max(1, Math.floor(ENEMY_MAX_HEALTH * levelMult));
+    const scaledExpReward = Math.max(1, Math.floor(ENEMY_EXP_REWARD * levelMult));
+
     const enemy = new Enemy({
         id,
         x,
         y,
+        name: enemyName,
+        level: enemyLevel,
         radius: ENEMY_RADIUS,
         speed: ENEMY_SPEED,
-        maxHealth: ENEMY_MAX_HEALTH,
+        maxHealth: scaledHealth,
     });
-    enemy.expReward = ENEMY_EXP_REWARD;
+    enemy.expReward = scaledExpReward;
     enemy.respawnMs = ENEMY_RESPAWN_MS;
     enemy.lastHitBy = null;
+    enemy.contactDamage = CONTACT_DAMAGE;
     return enemy;
 }
 
@@ -273,6 +302,8 @@ function scheduleEnemyRespawn(enemy, nowMs) {
         id: enemy.id,
         x: enemy.spawnX,
         y: enemy.spawnY,
+        name: enemy.name,
+        level: enemy.level,
         respawnAt: nowMs + (enemy.respawnMs || ENEMY_RESPAWN_MS),
     });
 }
@@ -297,7 +328,10 @@ function processEnemyRespawns(entitiesById, nowMs) {
     for (let i = pendingEnemyRespawns.length - 1; i >= 0; i -= 1) {
         const respawn = pendingEnemyRespawns[i];
         if (nowMs < respawn.respawnAt) continue;
-        const enemy = spawnEnemy(respawn.id, respawn.x, respawn.y);
+        const enemy = spawnEnemy(respawn.id, respawn.x, respawn.y, {
+            name: respawn.name,
+            level: respawn.level,
+        });
         entitiesById.set(enemy.id, enemy);
         pendingEnemyRespawns.splice(i, 1);
     }
@@ -365,7 +399,7 @@ export function stepWorld(entitiesById, dt) {
             const hitRadius = (enemy.radius || ENEMY_RADIUS) + slash.thickness;
             if (distSq > hitRadius * hitRadius) continue;
             slash.hitEnemies.add(enemy.id);
-            markEnemyHit(enemy, slash.damage, slash.ownerId);
+            markEnemyHit(enemy, slash.damage, slash.ownerId, nowMs);
         }
 
         if (segment.progress >= 1) {
@@ -395,7 +429,7 @@ export function stepWorld(entitiesById, dt) {
                 )) {
                     continue;
                 }
-                markEnemyHit(enemy, projectile.damage, projectile.ownerId);
+                markEnemyHit(enemy, projectile.damage, projectile.ownerId, nowMs);
                 shouldRemove = true;
                 break;
             }
@@ -419,13 +453,18 @@ export function stepWorld(entitiesById, dt) {
 
             if (nowMs - player.lastDamageAt < PLAYER_IFRAMES_MS) continue;
             player.lastDamageAt = nowMs;
-            player.takeDamage(CONTACT_DAMAGE);
+            player.takeDamage(enemy.contactDamage || CONTACT_DAMAGE);
         }
     }
 
     for (let i = expGainEvents.length - 1; i >= 0; i -= 1) {
         if (expGainEvents[i].expiresAt <= nowMs) {
             expGainEvents.splice(i, 1);
+        }
+    }
+    for (let i = damageEvents.length - 1; i >= 0; i -= 1) {
+        if (damageEvents[i].expiresAt <= nowMs) {
+            damageEvents.splice(i, 1);
         }
     }
 }
@@ -464,6 +503,15 @@ export function makeSnapshot(entitiesById, nowMs) {
             id: evt.id,
             playerId: evt.playerId,
             amount: evt.amount,
+            createdAt: evt.createdAt,
+            expiresAt: evt.expiresAt,
+        })),
+        damageEvents: damageEvents.map((evt) => ({
+            id: evt.id,
+            playerId: evt.playerId,
+            amount: evt.amount,
+            x: evt.x,
+            y: evt.y,
             createdAt: evt.createdAt,
             expiresAt: evt.expiresAt,
         })),
