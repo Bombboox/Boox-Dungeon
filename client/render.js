@@ -331,6 +331,101 @@ function drawDamageEvents(ctx, camera, damageEvents, meId) {
   }
 }
 
+function drawLevelUpEffects(ctx, camera, entitiesById, levelUpEffects) {
+  if (!Array.isArray(levelUpEffects) || levelUpEffects.length === 0) return;
+
+  const now = Date.now();
+  for (const evt of levelUpEffects) {
+    if (!evt || !evt.playerId) continue;
+    if (!Number.isFinite(evt.createdAt) || !Number.isFinite(evt.expiresAt) || evt.expiresAt <= evt.createdAt) continue;
+    if (now >= evt.expiresAt) continue;
+
+    const entity = entitiesById[evt.playerId];
+    if (!entity) continue;
+
+    const progress = Math.max(0, Math.min(1, (now - evt.createdAt) / (evt.expiresAt - evt.createdAt)));
+    const pulse = Math.sin(progress * Math.PI);
+    const baseRadius = (entity.radius || 18) + 6;
+    const outerRadius = baseRadius + (24 * progress);
+
+    const { x: sx, y: sy } = worldToScreen(entity.x, entity.y, camera);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+
+    const glow = ctx.createRadialGradient(sx, sy, baseRadius * 0.6, sx, sy, outerRadius);
+    glow.addColorStop(0, "rgba(146, 224, 255, 0.00)");
+    glow.addColorStop(0.65, `rgba(146, 224, 255, ${0.24 * (1 - progress)})`);
+    glow.addColorStop(1, "rgba(146, 224, 255, 0.00)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(sx, sy, outerRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = 0.95 - (progress * 0.65);
+    ctx.strokeStyle = "#9ce5ff";
+    ctx.lineWidth = 2 + (1.5 * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(sx, sy, outerRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.globalAlpha = 0.5 * pulse;
+    ctx.strokeStyle = "#e3f9ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, baseRadius + (8 * pulse), 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
+function drawDeathEffects(ctx, camera, deathEffects) {
+  if (!Array.isArray(deathEffects) || deathEffects.length === 0) return;
+
+  const now = Date.now();
+  for (const evt of deathEffects) {
+    if (!evt) continue;
+    if (!Number.isFinite(evt.x) || !Number.isFinite(evt.y)) continue;
+    if (!Number.isFinite(evt.createdAt) || !Number.isFinite(evt.expiresAt) || evt.expiresAt <= evt.createdAt) continue;
+    if (now >= evt.expiresAt) continue;
+
+    const progress = Math.max(0, Math.min(1, (now - evt.createdAt) / (evt.expiresAt - evt.createdAt)));
+    const alpha = 1 - progress;
+    const flashRadius = 10 + (60 * progress);
+
+    const center = worldToScreen(evt.x, evt.y, camera);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+
+    const flash = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, flashRadius);
+    flash.addColorStop(0, `rgba(255, 130, 130, ${0.6 * alpha})`);
+    flash.addColorStop(1, "rgba(255, 130, 130, 0)");
+    ctx.fillStyle = flash;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, flashRadius, 0, Math.PI * 2);
+    ctx.fill();
+
+    const particles = Array.isArray(evt.particles) ? evt.particles : [];
+    for (const p of particles) {
+      if (!p) continue;
+      const px = evt.x + ((p.vx || 0) * progress);
+      const py = evt.y + ((p.vy || 0) * progress) + (26 * progress * progress);
+      const ps = worldToScreen(px, py, camera);
+      const radius = Math.max(0.5, (p.radius || 2) * (1 - (progress * 0.35)));
+
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color || "#ff7b7b";
+      ctx.beginPath();
+      ctx.arc(ps.x, ps.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   const radius = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();
@@ -400,6 +495,8 @@ export function renderFrame(ctx, state) {
   const slashes = Array.isArray(state.slashes) ? state.slashes : [];
   const expEvents = Array.isArray(state.expEvents) ? state.expEvents : [];
   const damageEvents = Array.isArray(state.damageEvents) ? state.damageEvents : [];
+  const levelUpEffects = Array.isArray(state.levelUpEffects) ? state.levelUpEffects : [];
+  const deathEffects = Array.isArray(state.deathEffects) ? state.deathEffects : [];
   const chatBubblesById = state.chatBubblesById || {};
   const textureBaseUrl = "/assets/skins/";
   let me = null;
@@ -419,6 +516,9 @@ export function renderFrame(ctx, state) {
     }
     if (entity.id === state.meId) me = entity;
   }
+
+  drawLevelUpEffects(ctx, camera, state.players || state.entities || {}, levelUpEffects);
+  drawDeathEffects(ctx, camera, deathEffects);
 
   for (const slash of slashes) {
     drawSlash(ctx, camera, slash, textureBaseUrl);

@@ -9,6 +9,7 @@ export const PLAYER_MAX_HEALTH = 100;
 export const ENEMY_MAX_HEALTH = 40;
 export const CONTACT_DAMAGE = 10;
 export const PLAYER_IFRAMES_MS = 600;
+export const PLAYER_RESPAWN_MS = 5000;
 
 export const PLAYER_CLASSES = {
     BLADE: "blade",
@@ -54,6 +55,7 @@ let nextSlashId = 1;
 const activeProjectiles = [];
 const activeSlashes = [];
 const pendingEnemyRespawns = [];
+const pendingPlayerRespawns = [];
 const expGainEvents = [];
 const damageEvents = [];
 
@@ -131,7 +133,7 @@ function markEnemyHit(enemy, damage, attackerId, nowMs) {
     });
 }
 
-export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE) {
+export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE, name = "Player") {
     const player = new Player({
         id,
         x: x - PLAYER_RADIUS,
@@ -140,7 +142,11 @@ export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE) {
         speed: PLAYER_SPEED,
         maxHealth: PLAYER_MAX_HEALTH,
         playerClass,
+        name,
     });
+    player.spawnX = player.x;
+    player.spawnY = player.y;
+    player.respawnMs = PLAYER_RESPAWN_MS;
     player.expToNext = expToNextLevel(player.level);
     applyPlayerDerivedStats(player);
     return player;
@@ -337,6 +343,39 @@ function processEnemyRespawns(entitiesById, nowMs) {
     }
 }
 
+function schedulePlayerRespawn(player, nowMs) {
+    if (!player || player.type !== "player" || player.health > 0) return;
+    if (pendingPlayerRespawns.some((respawn) => respawn.id === player.id)) return;
+
+    pendingPlayerRespawns.push({
+        id: player.id,
+        respawnAt: nowMs + (player.respawnMs || PLAYER_RESPAWN_MS),
+    });
+}
+
+function processPlayerRespawns(entitiesById, nowMs) {
+    for (let i = pendingPlayerRespawns.length - 1; i >= 0; i -= 1) {
+        const respawn = pendingPlayerRespawns[i];
+        if (nowMs < respawn.respawnAt) continue;
+
+        const player = entitiesById.get(respawn.id);
+        if (!player || player.type !== "player") {
+            pendingPlayerRespawns.splice(i, 1);
+            continue;
+        }
+
+        player.x = Number.isFinite(player.spawnX) ? player.spawnX : player.x;
+        player.y = Number.isFinite(player.spawnY) ? player.spawnY : player.y;
+        player.health = player.maxHealth;
+        player.lastDamageAt = nowMs;
+        player.pendingMeleeAttack = false;
+        player.pendingThrowAttack = false;
+        player.input = { up: false, down: false, left: false, right: false, aim: player.input?.aim || 0 };
+
+        pendingPlayerRespawns.splice(i, 1);
+    }
+}
+
 export function stepWorld(entitiesById, dt) {
     const entities = Array.from(entitiesById.values());
     const alivePlayers = entities.filter((e) => e && e.type === "player" && e.health > 0);
@@ -442,6 +481,13 @@ export function stepWorld(entitiesById, dt) {
 
     processEnemyDeaths(entitiesById, nowMs);
     processEnemyRespawns(entitiesById, nowMs);
+
+    for (const entity of entitiesById.values()) {
+        if (!entity || entity.type !== "player") continue;
+        if (entity.health > 0) continue;
+        schedulePlayerRespawn(entity, nowMs);
+    }
+    processPlayerRespawns(entitiesById, nowMs);
 
     for (const enemy of enemies) {
         if (!enemy || enemy.health <= 0) continue;

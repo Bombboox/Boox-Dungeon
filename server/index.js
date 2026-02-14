@@ -42,17 +42,28 @@ enemySpawns.forEach((spawn, index) => {
     });
     entities.set(enemy.id, enemy);
 });
-const joinClassCycle = [PLAYER_CLASSES.BLADE, PLAYER_CLASSES.THROWER];
-let joinClassIndex = 0;
+
+function sanitizePlayerClass(rawClass) {
+    if (rawClass === PLAYER_CLASSES.THROWER) return PLAYER_CLASSES.THROWER;
+    return PLAYER_CLASSES.BLADE;
+}
+
+function sanitizePlayerName(rawName, id) {
+    const source = typeof rawName === "string" ? rawName : "";
+    const compact = source.replace(/\s+/g, " ").trim().slice(0, 20);
+    if (compact) return compact;
+    return `Player-${String(id).slice(0, 4)}`;
+}
 
 io.on("connection", (socket) => {
     const id = socket.id;
-    const playerClass = joinClassCycle[joinClassIndex % joinClassCycle.length];
-    joinClassIndex += 1;
-    const player = spawnPlayer(id, spawn_pos.x, spawn_pos.y, playerClass);
+    const auth = socket.handshake?.auth || {};
+    const playerClass = sanitizePlayerClass(auth.playerClass);
+    const playerName = sanitizePlayerName(auth.name, id);
+    const player = spawnPlayer(id, spawn_pos.x, spawn_pos.y, playerClass, playerName);
     entities.set(id, player);
 
-    socket.emit(S2C.INIT, {meId: id, tickRate: TICK_RATE, playerClass});
+    socket.emit(S2C.INIT, {meId: id, tickRate: TICK_RATE, playerClass, name: playerName});
 
     socket.on(C2S.INPUT, (msg) => {
         const p = entities.get(id);
@@ -70,9 +81,12 @@ io.on("connection", (socket) => {
     socket.on(C2S.CHAT, (rawMessage) => {
         const text = typeof rawMessage === "string" ? rawMessage.trim() : "";
         if (!text) return;
+        const p = entities.get(id);
+        const name = p?.name || sanitizePlayerName("", id);
 
         io.emit(S2C.CHAT, {
             id,
+            name,
             text: text.slice(0, 240),
             ts: Date.now(),
         });

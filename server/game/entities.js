@@ -83,6 +83,7 @@ export class Player extends Entity {
         speed = 220,
         maxHealth = 100,
         playerClass = PLAYER_CLASSES.BLADE,
+        name = "Player",
     } = {}) {
         super({
             id,
@@ -101,6 +102,7 @@ export class Player extends Entity {
         this.lastInputSeq = 0;
         this.lastDamageAt = -Infinity;
         this.playerClass = playerClass;
+        this.name = typeof name === "string" && name.trim() ? name.trim() : "Player";
         this.pendingMeleeAttack = false;
         this.pendingThrowAttack = false;
         this.baseMaxHealth = maxHealth;
@@ -143,6 +145,8 @@ export class Player extends Entity {
     }
 
     step(dt) {
+        if (this.health <= 0) return;
+
         let vx = 0;
         let vy = 0;
 
@@ -159,6 +163,7 @@ export class Player extends Entity {
         return {
             ...super.toSnapshot(),
             playerClass: this.playerClass,
+            name: this.name,
             level: this.level,
             exp: this.exp,
             expToNext: this.expToNext,
