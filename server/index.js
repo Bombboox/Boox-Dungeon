@@ -11,6 +11,7 @@ import {
     spawnPlayer,
     spawnEnemy,
     applyInput,
+    applyInventoryAction,
     applySkillUpgrade,
     stepWorld,
     makeSnapshot,
@@ -76,6 +77,12 @@ io.on("connection", (socket) => {
         if (!p || !msg || typeof msg !== "object") return;
         if (typeof msg.stat !== "string") return;
         applySkillUpgrade(p, msg.stat);
+    });
+
+    socket.on(C2S.INVENTORY_ACTION, (msg) => {
+        const p = entities.get(id);
+        if (!p || !msg || typeof msg !== "object") return;
+        applyInventoryAction(p, msg);
     });
 
     socket.on(C2S.CHAT, (rawMessage) => {

@@ -119,6 +119,11 @@ export class Player extends Entity {
         };
         this.lastMeleeAt = -Infinity;
         this.lastThrowAt = -Infinity;
+        this.inventory = [];
+        this.hotbar = [];
+        this.equippedWeapon = null;
+        this.equippedGlyphs = [];
+        this.selectedHotbarIndex = 0;
     }
 
     applyInput(inputMsg) {
@@ -174,6 +179,11 @@ export class Player extends Entity {
                 speed: this.stats.speed,
                 attackSpeed: this.stats.attackSpeed,
             },
+            inventory: Array.isArray(this.inventory) ? this.inventory : [],
+            hotbar: Array.isArray(this.hotbar) ? this.hotbar : [],
+            equippedWeapon: this.equippedWeapon || null,
+            equippedGlyphs: Array.isArray(this.equippedGlyphs) ? this.equippedGlyphs : [],
+            selectedHotbarIndex: Number.isFinite(this.selectedHotbarIndex) ? this.selectedHotbarIndex : 0,
         };
     }
 }

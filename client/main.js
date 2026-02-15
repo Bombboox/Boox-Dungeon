@@ -16,6 +16,8 @@ const skillsMenuEl = document.getElementById("skills-menu");
 const skillsLevelEl = document.getElementById("skills-level");
 const skillsPointsEl = document.getElementById("skills-points");
 const levelUpPopupEl = document.getElementById("levelup-popup");
+const inventoryToggleEl = document.getElementById("inventory-toggle");
+const inventoryMenuEl = document.getElementById("inventory-menu");
 const statHealthEl = document.getElementById("stat-health");
 const statDamageEl = document.getElementById("stat-damage");
 const statSpeedEl = document.getElementById("stat-speed");
@@ -53,13 +55,35 @@ function setKey(e, isDown) {
   if (!sessionActive) return;
   if (isChatFocused()) return;
 
+  if (isDown) {
+    const hotbarKeyMap = {
+      "1": 0, "2": 1, "3": 2, "4": 3, "5": 4,
+      "6": 5, "7": 6, "8": 7, "9": 8, "0": 9,
+    };
+    if (Object.prototype.hasOwnProperty.call(hotbarKeyMap, e.key)) {
+      selectHotbarSlot(hotbarKeyMap[e.key]);
+      e.preventDefault();
+      return;
+    }
+  }
+
+  if (inventoryMenuOpen && e.key !== "e" && e.key !== "E") {
+    e.preventDefault();
+    return;
+  }
+
   switch (e.key) {
     case "w": case "W": case "ArrowUp": keys.up = isDown; break;
     case "s": case "S": case "ArrowDown": keys.down = isDown; break;
     case "a": case "A": case "ArrowLeft": keys.left = isDown; break;
     case "d": case "D": case "ArrowRight": keys.right = isDown; break;
     case "q": case "Q": if (isDown) queuedAttacks.melee = true; break;
-    case "e": case "E": if (isDown) queuedAttacks.throw = true; break;
+    case "r": case "R": if (isDown) queuedAttacks.throw = true; break;
+    case "e": case "E":
+      if (isDown) {
+        setInventoryMenuOpen(!inventoryMenuOpen);
+      }
+      break;
     case "`": if(isDown){chatEl.style.display = (chatEl.style.display === "none") ? "" : "none"; if(chatEl.style.display != "none") chatEl.focus()}; break;
     default: return;
   }
@@ -79,6 +103,7 @@ window.addEventListener("contextmenu", (e) => {
 window.addEventListener("mousedown", (e) => {
   if (!sessionActive) return;
   if (isChatFocused()) return;
+  if (inventoryMenuOpen) return;
   switch(e.button) {
     case 0:
       keys.mouseOne = true;
@@ -96,6 +121,7 @@ window.addEventListener("mousedown", (e) => {
 window.addEventListener("mouseup", (e) => {
   if (!sessionActive) return;
   if(isChatFocused()) return;
+  if (inventoryMenuOpen) return;
   switch(e.button) {
     case 0:
       keys.mouseOne = false;
@@ -109,7 +135,7 @@ window.addEventListener("mouseup", (e) => {
 // --- Networking ---
 let socket = null;
 
-const C2S = { INPUT: "c2s:input", CHAT: "c2s:chat", SKILL_UPGRADE: "c2s:skill_upgrade" };
+const C2S = { INPUT: "c2s:input", CHAT: "c2s:chat", SKILL_UPGRADE: "c2s:skill_upgrade", INVENTORY_ACTION: "c2s:inventory_action" };
 const S2C = { INIT: "s2c:init", SNAPSHOT: "s2c:snapshot", DISCONNECT: "s2c:disconnect", CHAT: "s2c:chat" };
 
 let meId = null;
@@ -125,6 +151,11 @@ const LEVEL_UP_AURA_MS = 1_100;
 const LEVEL_UP_POPUP_VISIBLE_MS = 1_200;
 const DEATH_EFFECT_MS = 1_250;
 let skillsMenuOpen = false;
+let inventoryMenuOpen = false;
+let inventorySelection = null;
+let inventoryDragSource = null;
+let inventoryDragInProgress = false;
+let lastInventoryDragEndAt = 0;
 let levelUpPopupTimer = null;
 let levelUpEffects = [];
 let deathEffects = [];
@@ -153,6 +184,207 @@ function setSkillsMenuOpen(nextOpen) {
     skillsMenuEl.classList.add("skills-menu--open");
   } else {
     skillsMenuEl.classList.remove("skills-menu--open");
+  }
+}
+
+function setInventoryMenuOpen(nextOpen) {
+  inventoryMenuOpen = !!nextOpen;
+  if (!inventoryMenuEl) return;
+  if (inventoryMenuOpen) {
+    inventoryMenuEl.classList.add("inventory-menu--open");
+  } else {
+    inventoryMenuEl.classList.remove("inventory-menu--open");
+    inventorySelection = null;
+    inventoryDragInProgress = false;
+    inventoryDragSource = null;
+  }
+  renderInventoryUI();
+}
+
+function getInventorySlotLabel(item) {
+  if (!item) return "Empty";
+  if (item.type === "weapon") {
+    const dmg = Number.isFinite(item.damage) ? Math.floor(item.damage) : 0;
+    return `${item.name}\nDMG ${dmg}`;
+  }
+  if (item.type === "glyph") {
+    const pct = Number.isFinite(item.percentBoost) ? Math.floor(item.percentBoost * 100) : 0;
+    return `${item.name}\n+${pct}% ${String(item.stat || "").toUpperCase()}`;
+  }
+  return item.name || "Item";
+}
+
+function getPlayerInventoryState() {
+  const players = lastSnapshot.players || {};
+  return meId ? players[meId] : null;
+}
+
+function normalizeLocation(kind, index = null) {
+  return Number.isInteger(index) ? { kind, index } : { kind };
+}
+
+function isSameLocation(a, b) {
+  if (!a || !b) return false;
+  return a.kind === b.kind && a.index === b.index;
+}
+
+function sendInventoryAction(payload) {
+  if (!sessionActive || !socket || !payload) return;
+  socket.emit(C2S.INVENTORY_ACTION, payload);
+}
+
+function selectHotbarSlot(index) {
+  sendInventoryAction({ action: "selectHotbar", index });
+}
+
+function getItemAtLocation(playerState, location) {
+  if (!playerState || !location) return null;
+  if (location.kind === "inventory") return playerState.inventory?.[location.index] || null;
+  if (location.kind === "hotbar") return playerState.hotbar?.[location.index] || null;
+  if (location.kind === "weapon") return playerState.equippedWeapon || null;
+  if (location.kind === "glyph") return playerState.equippedGlyphs?.[location.index] || null;
+  return null;
+}
+
+function requestInventorySwap(from, to) {
+  if (!from || !to) return;
+  if (isSameLocation(from, to)) return;
+  sendInventoryAction({
+    action: "swap",
+    from,
+    to,
+  });
+}
+
+function handleInventorySlotClick(kind, index = null) {
+  const me = getPlayerInventoryState();
+  if (!me) return;
+  const location = normalizeLocation(kind, index);
+  const item = getItemAtLocation(me, location);
+
+  if (!inventorySelection) {
+    if (!item) return;
+    inventorySelection = location;
+    renderInventoryUI();
+    return;
+  }
+
+  if (isSameLocation(inventorySelection, location)) {
+    inventorySelection = null;
+    renderInventoryUI();
+    return;
+  }
+
+  requestInventorySwap(inventorySelection, location);
+  inventorySelection = null;
+  renderInventoryUI();
+}
+
+function renderInventoryUI() {
+  if (!inventoryMenuEl) return;
+  if (inventoryDragInProgress) return;
+  const me = getPlayerInventoryState();
+  if (!me || !inventoryMenuOpen) {
+    inventoryMenuEl.innerHTML = "";
+    return;
+  }
+
+  const inv = Array.isArray(me.inventory) ? me.inventory : [];
+  const hotbar = Array.isArray(me.hotbar) ? me.hotbar : [];
+  const glyphs = Array.isArray(me.equippedGlyphs) ? me.equippedGlyphs : [];
+  const selectedHotbar = Number.isFinite(me.selectedHotbarIndex) ? me.selectedHotbarIndex : 0;
+
+  function slotButton(location, item, labelPrefix, active = false) {
+    const selected = inventorySelection && isSameLocation(inventorySelection, location);
+    const classes = ["slot-btn"];
+    if (active) classes.push("slot-btn--active");
+    if (selected) classes.push("slot-btn--selected");
+    const label = getInventorySlotLabel(item);
+    const text = label.replace("\n", "<small>") + (label.includes("\n") ? "</small>" : "");
+    const draggable = item ? "true" : "false";
+    return `<button class="${classes.join(" ")}" data-kind="${location.kind}" ${Number.isInteger(location.index) ? `data-index="${location.index}"` : ""} draggable="${draggable}" type="button">${labelPrefix}<br>${text}</button>`;
+  }
+
+  const inventoryRows = inv.map((item, i) => slotButton(normalizeLocation("inventory", i), item, `${i + 1}.`)).join("");
+  const hotbarRows = hotbar.map((item, i) => {
+    const keyLabel = i === 9 ? "0" : String(i + 1);
+    return slotButton(normalizeLocation("hotbar", i), item, `[${keyLabel}]`, i === selectedHotbar);
+  }).join("");
+
+  const weaponSlot = slotButton(normalizeLocation("weapon"), me.equippedWeapon || null, "Weapon");
+  const glyphSlots = new Array(5).fill(null).map((_, i) => slotButton(normalizeLocation("glyph", i), glyphs[i] || null, `Glyph ${i + 1}`)).join("");
+
+  inventoryMenuEl.innerHTML = `
+    <div class="inventory-section-title">Equipped</div>
+    <div class="equip-grid">${weaponSlot}${glyphSlots}</div>
+    <div class="inventory-section-title">Hotbar (1-0)</div>
+    <div class="hotbar-grid">${hotbarRows}</div>
+    <div class="inventory-section-title">Inventory (32)</div>
+    <div class="inventory-grid">${inventoryRows}</div>
+  `;
+
+  const slotButtons = inventoryMenuEl.querySelectorAll(".slot-btn");
+  for (const btn of slotButtons) {
+    const kind = btn.dataset.kind;
+    const parsedIndex = btn.dataset.index != null ? Number(btn.dataset.index) : null;
+    const location = normalizeLocation(kind, Number.isInteger(parsedIndex) ? parsedIndex : null);
+
+    btn.addEventListener("click", () => {
+      if (Date.now() - lastInventoryDragEndAt < 150) return;
+      handleInventorySlotClick(location.kind, Number.isInteger(location.index) ? location.index : null);
+    });
+
+    btn.addEventListener("dragstart", (event) => {
+      const slotItem = getItemAtLocation(me, location);
+      if (!slotItem) {
+        event.preventDefault();
+        return;
+      }
+      inventoryDragInProgress = true;
+      inventoryDragSource = location;
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", JSON.stringify(location));
+      }
+    });
+
+    btn.addEventListener("dragover", (event) => {
+      if (!inventoryDragSource) return;
+      event.preventDefault();
+      btn.classList.add("slot-btn--drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+
+    btn.addEventListener("dragleave", () => {
+      btn.classList.remove("slot-btn--drop-target");
+    });
+
+    btn.addEventListener("drop", (event) => {
+      event.preventDefault();
+      btn.classList.remove("slot-btn--drop-target");
+
+      let source = inventoryDragSource;
+      if (!source && event.dataTransfer) {
+        try {
+          const raw = event.dataTransfer.getData("text/plain");
+          if (raw) source = JSON.parse(raw);
+        } catch (_) {}
+      }
+      if (!source || isSameLocation(source, location)) return;
+      requestInventorySwap(source, location);
+      inventorySelection = null;
+    });
+
+    btn.addEventListener("dragend", () => {
+      lastInventoryDragEndAt = Date.now();
+      inventoryDragInProgress = false;
+      inventoryDragSource = null;
+      const highlighted = inventoryMenuEl.querySelectorAll(".slot-btn--drop-target");
+      for (const el of highlighted) {
+        el.classList.remove("slot-btn--drop-target");
+      }
+      renderInventoryUI();
+    });
   }
 }
 
@@ -370,6 +602,7 @@ chatInputEl.addEventListener("blur", () => {
 
 scheduleChatFade();
 setSkillsMenuOpen(false);
+setInventoryMenuOpen(false);
 chatEl.classList.add("chat--faded");
 
 function setSelectedClass(nextClass) {
@@ -413,6 +646,11 @@ skillsToggleEl.addEventListener("click", () => {
   setSkillsMenuOpen(!skillsMenuOpen);
 });
 
+inventoryToggleEl?.addEventListener("click", () => {
+  if (!sessionActive) return;
+  setInventoryMenuOpen(!inventoryMenuOpen);
+});
+
 for (const btn of skillUpButtons) {
   btn.addEventListener("click", () => {
     if (!sessionActive || !socket) return;
@@ -425,6 +663,7 @@ for (const btn of skillUpButtons) {
 function bindSocketHandlers(activeSocket) {
   activeSocket.on(S2C.INIT, (msg) => {
     meId = msg.meId;
+    renderInventoryUI();
   });
 
   activeSocket.on(S2C.SNAPSHOT, (snap) => {
@@ -433,6 +672,7 @@ function bindSocketHandlers(activeSocket) {
 
     lastSnapshot = snap;
     updateSkillMenuFromSnapshot();
+    renderInventoryUI();
 
     const nextPlayers = snap?.players || {};
     const nextMe = meId ? nextPlayers[meId] : null;
@@ -513,7 +753,7 @@ function sendInput() {
   });
 
   queuedAttacks.melee = keys.mouseOne;
-  queuedAttacks.throw = keys.mouseOne;
+  queuedAttacks.throw = keys.mouseTwo;
 }
 
 function clamp(value, min, max) {

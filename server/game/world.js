@@ -16,25 +16,19 @@ export const PLAYER_CLASSES = {
     THROWER: "thrower",
 };
 
-export const WEAPON_CLASS_BY_ATTACK = {
-    melee: PLAYER_CLASSES.BLADE,
-    throw: PLAYER_CLASSES.THROWER,
-};
-
-const MELEE_COOLDOWN_MS = 900;
 const MELEE_SWING_DURATION_MS = 400;
 const MELEE_SWING_START_OFFSET = -1.2;
 const MELEE_SWING_END_OFFSET = 1.2;
 const MELEE_SWING_INNER_RANGE = 14;
 const MELEE_SWING_OUTER_RANGE = 82;
 const MELEE_SWING_THICKNESS = 10;
-const MELEE_DAMAGE = 20;
 
-const THROW_COOLDOWN_MS = 350;
-const THROW_DAMAGE = 16;
 const THROW_PROJECTILE_SPEED = 520;
 const THROW_PROJECTILE_RANGE = 520;
 const THROW_PROJECTILE_RADIUS = 6;
+const INVENTORY_SIZE = 32;
+const HOTBAR_SIZE = 10;
+const GLYPH_SLOTS = 5;
 
 const ENEMY_RESPAWN_MS = 4500;
 const ENEMY_EXP_REWARD = 45;
@@ -49,6 +43,7 @@ const EXP_POPUP_MS = 900;
 const DAMAGE_POPUP_MS = 700;
 
 import { Enemy, Player } from "./entities.js";
+import { createStarterItems, GLYPH_STAT_KEYS, WEAPON_TYPES } from "./items.js";
 
 let nextProjectileId = 1;
 let nextSlashId = 1;
@@ -58,10 +53,36 @@ const pendingEnemyRespawns = [];
 const pendingPlayerRespawns = [];
 const expGainEvents = [];
 const damageEvents = [];
+let nextItemId = 1;
+const DEFAULT_MELEE_WEAPON = WEAPON_TYPES.TRAINING_BLADE;
+const DEFAULT_THROW_WEAPON = WEAPON_TYPES.PRACTICE_THROWER;
+
+function createItemId() {
+    return `item:${nextItemId++}`;
+}
 
 function expToNextLevel(level) {
     const safeLevel = Math.max(1, level | 0);
     return Math.floor(100 * Math.pow(1.22, safeLevel - 1));
+}
+
+function getGlyphAdditiveBonus(player, statKey) {
+    if (!player || !Array.isArray(player.equippedGlyphs)) return 0;
+    let bonus = 0;
+    for (const glyph of player.equippedGlyphs) {
+        if (!glyph || glyph.type !== "glyph") continue;
+        if (glyph.stat !== statKey) continue;
+        if (!Number.isFinite(glyph.percentBoost)) continue;
+        bonus += glyph.percentBoost;
+    }
+    return Math.max(0, bonus);
+}
+
+function getEquippedWeapon(player) {
+    const weapon = player?.equippedWeapon;
+    if (!weapon || weapon.type !== "weapon") return null;
+    if (weapon.weaponClass !== player.playerClass) return null;
+    return weapon;
 }
 
 function getEnemyLevelMultiplier(level) {
@@ -73,15 +94,17 @@ function applyPlayerDerivedStats(player) {
     if (!player || player.type !== "player") return;
     const healthPoints = player.stats?.health || 0;
     const speedPoints = player.stats?.speed || 0;
+    const healthGlyphBonus = getGlyphAdditiveBonus(player, "health");
+    const speedGlyphBonus = getGlyphAdditiveBonus(player, "speed");
 
     const oldMax = player.maxHealth;
-    player.maxHealth = player.baseMaxHealth + (healthPoints * STAT_HEALTH_GAIN);
-    player.speed = player.baseSpeed + (speedPoints * STAT_SPEED_GAIN);
+    const baseMax = player.baseMaxHealth + (healthPoints * STAT_HEALTH_GAIN);
+    const baseSpeed = player.baseSpeed + (speedPoints * STAT_SPEED_GAIN);
+    player.maxHealth = Math.max(1, Math.floor(baseMax * (1 + healthGlyphBonus)));
+    player.speed = baseSpeed * (1 + speedGlyphBonus);
     if (!Number.isFinite(player.health)) {
         player.health = player.maxHealth;
-    } else if (player.maxHealth > oldMax) {
-        player.health += (player.maxHealth - oldMax);
-    }
+    } 
     player.health = Math.max(0, Math.min(player.health, player.maxHealth));
 }
 
@@ -92,7 +115,8 @@ function getPlayerAttackSpeedScale(player) {
 
 function getPlayerDamageMultiplier(player) {
     const points = player?.stats?.damage || 0;
-    return 1 + (points * STAT_DAMAGE_GAIN);
+    const glyphBonus = getGlyphAdditiveBonus(player, "damage");
+    return 1 + (points * STAT_DAMAGE_GAIN) + glyphBonus;
 }
 
 function grantExp(player, amount, nowMs) {
@@ -148,6 +172,22 @@ export function spawnPlayer(id, x, y, playerClass = PLAYER_CLASSES.BLADE, name =
     player.spawnY = player.y;
     player.respawnMs = PLAYER_RESPAWN_MS;
     player.expToNext = expToNextLevel(player.level);
+    player.inventory = new Array(INVENTORY_SIZE).fill(null);
+    player.hotbar = new Array(HOTBAR_SIZE).fill(null);
+    player.equippedWeapon = null;
+    player.equippedGlyphs = new Array(GLYPH_SLOTS).fill(null);
+    player.selectedHotbarIndex = 0;
+
+    const starterItems = createStarterItems(createItemId);
+    for (let i = 0; i < starterItems.length && i < player.inventory.length; i += 1) {
+        player.inventory[i] = starterItems[i];
+    }
+
+    const starterWeaponIndex = player.inventory.findIndex((item) => item?.type === "weapon" && item.weaponClass === player.playerClass);
+    if (starterWeaponIndex >= 0) {
+        player.equippedWeapon = player.inventory[starterWeaponIndex];
+        player.inventory[starterWeaponIndex] = null;
+    }
     applyPlayerDerivedStats(player);
     return player;
 }
@@ -193,6 +233,103 @@ export function applySkillUpgrade(player, statKey) {
 
     player.stats[statKey] += 1;
     player.skillPoints -= 1;
+    applyPlayerDerivedStats(player);
+    return true;
+}
+
+function isValidSlotIndex(index, size) {
+    return Number.isInteger(index) && index >= 0 && index < size;
+}
+
+function getSlotRef(player, location) {
+    if (!player || !location || typeof location !== "object") return null;
+    const kind = location.kind;
+    const index = location.index;
+
+    if (kind === "inventory") {
+        if (!isValidSlotIndex(index, INVENTORY_SIZE)) return null;
+        return {
+            get: () => player.inventory[index],
+            set: (value) => { player.inventory[index] = value || null; },
+        };
+    }
+    if (kind === "hotbar") {
+        if (!isValidSlotIndex(index, HOTBAR_SIZE)) return null;
+        return {
+            get: () => player.hotbar[index],
+            set: (value) => { player.hotbar[index] = value || null; },
+        };
+    }
+    if (kind === "weapon") {
+        return {
+            get: () => player.equippedWeapon,
+            set: (value) => { player.equippedWeapon = value || null; },
+        };
+    }
+    if (kind === "glyph") {
+        if (!isValidSlotIndex(index, GLYPH_SLOTS)) return null;
+        return {
+            get: () => player.equippedGlyphs[index],
+            set: (value) => { player.equippedGlyphs[index] = value || null; },
+        };
+    }
+    return null;
+}
+
+function itemFitsLocation(player, item, location) {
+    if (!location) return false;
+    if (!item) return true;
+
+    if (location.kind === "weapon") {
+        return item.type === "weapon" && item.weaponClass === player.playerClass;
+    }
+    if (location.kind === "glyph") {
+        return item.type === "glyph" && GLYPH_STAT_KEYS.has(item.stat);
+    }
+    return location.kind === "inventory" || location.kind === "hotbar";
+}
+
+function sameLocation(a, b) {
+    if (!a || !b) return false;
+    return a.kind === b.kind && a.index === b.index;
+}
+
+function sanitizeHotbarIndex(value) {
+    const idx = Number(value);
+    if (!Number.isInteger(idx)) return null;
+    if (idx < 0 || idx >= HOTBAR_SIZE) return null;
+    return idx;
+}
+
+export function applyInventoryAction(player, payload) {
+    if (!player || player.type !== "player" || !payload || typeof payload !== "object") return false;
+    const action = payload.action;
+
+    if (action === "selectHotbar") {
+        const idx = sanitizeHotbarIndex(payload.index);
+        if (idx === null) return false;
+        player.selectedHotbarIndex = idx;
+        return true;
+    }
+
+    if (action !== "swap") return false;
+
+    const from = payload.from;
+    const to = payload.to;
+    if (sameLocation(from, to)) return false;
+
+    const fromRef = getSlotRef(player, from);
+    const toRef = getSlotRef(player, to);
+    if (!fromRef || !toRef) return false;
+
+    const sourceItem = fromRef.get();
+    const targetItem = toRef.get();
+    if (!sourceItem) return false;
+    if (!itemFitsLocation(player, sourceItem, to)) return false;
+    if (!itemFitsLocation(player, targetItem, from)) return false;
+
+    fromRef.set(targetItem || null);
+    toRef.set(sourceItem || null);
     applyPlayerDerivedStats(player);
     return true;
 }
@@ -253,8 +390,10 @@ function makeSlashSegment(owner, slash, nowMs) {
 }
 
 function queueMeleeSlash(player, nowMs) {
-    if (!player || player.playerClass !== WEAPON_CLASS_BY_ATTACK.melee) return;
-    const cooldown = MELEE_COOLDOWN_MS * getPlayerAttackSpeedScale(player);
+    const weapon = getEquippedWeapon(player);
+    if (!weapon || weapon.attackKind !== "melee") return;
+    const baseCooldown = Number.isFinite(weapon.cooldownMs) ? weapon.cooldownMs : DEFAULT_MELEE_WEAPON.cooldownMs;
+    const cooldown = baseCooldown * getPlayerAttackSpeedScale(player);
     const lastMeleeAt = Number.isFinite(player.lastMeleeAt) ? player.lastMeleeAt : -Infinity;
     if (nowMs - lastMeleeAt < cooldown) return;
 
@@ -269,15 +408,17 @@ function queueMeleeSlash(player, nowMs) {
         innerRange: MELEE_SWING_INNER_RANGE,
         outerRange: MELEE_SWING_OUTER_RANGE,
         thickness: MELEE_SWING_THICKNESS,
-        damage: MELEE_DAMAGE * getPlayerDamageMultiplier(player),
+        damage: (Number.isFinite(weapon.damage) ? weapon.damage : DEFAULT_MELEE_WEAPON.damage) * getPlayerDamageMultiplier(player),
         hitEnemies: new Set(),
         spriteKey: null,
     });
 }
 
 function queueThrowProjectile(player, nowMs) {
-    if (!player || player.playerClass !== WEAPON_CLASS_BY_ATTACK.throw) return;
-    const cooldown = THROW_COOLDOWN_MS * getPlayerAttackSpeedScale(player);
+    const weapon = getEquippedWeapon(player);
+    if (!weapon || weapon.attackKind !== "throw") return;
+    const baseCooldown = Number.isFinite(weapon.cooldownMs) ? weapon.cooldownMs : DEFAULT_THROW_WEAPON.cooldownMs;
+    const cooldown = baseCooldown * getPlayerAttackSpeedScale(player);
     const lastThrowAt = Number.isFinite(player.lastThrowAt) ? player.lastThrowAt : -Infinity;
     if (nowMs - lastThrowAt < cooldown) return;
 
@@ -295,7 +436,7 @@ function queueThrowProjectile(player, nowMs) {
         speed: THROW_PROJECTILE_SPEED,
         remainingRange: THROW_PROJECTILE_RANGE,
         radius: THROW_PROJECTILE_RADIUS,
-        damage: THROW_DAMAGE * getPlayerDamageMultiplier(player),
+        damage: (Number.isFinite(weapon.damage) ? weapon.damage : DEFAULT_THROW_WEAPON.damage) * getPlayerDamageMultiplier(player),
         angle: player.angle,
         spriteKey: null,
     });
